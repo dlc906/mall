@@ -1,0 +1,35 @@
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# ===== 编译产物 =====
+target/
+**/target/
+dist/
+*.class
+
+# ===== 前端 =====
+mall-web/node_modules/
+mall-web/dist/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== 日志 =====
+logs/
+*.log
+
+# ===== 本地运行时数据 =====
+sessionStore/
+work/
+conf/
+
+# ===== Agent 工具目录 =====
+.reasonix/
+
+# ===== 本地配置（含数据库密码等敏感信息） =====
+*.local.yml
+*.local.yaml
+application-local.properties

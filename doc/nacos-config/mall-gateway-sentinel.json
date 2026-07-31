@@ -1,0 +1,26 @@
+[
+  {
+    "resource": "mall-auth",
+    "resourceMode": 0,
+    "count": 100,
+    "grade": 1,
+    "intervalSec": 1,
+    "controlBehavior": 0
+  },
+  {
+    "resource": "mall-product",
+    "resourceMode": 0,
+    "count": 500,
+    "grade": 1,
+    "intervalSec": 1,
+    "controlBehavior": 0
+  },
+  {
+    "resource": "mall-order",
+    "resourceMode": 0,
+    "count": 200,
+    "grade": 1,
+    "intervalSec": 1,
+    "controlBehavior": 0
+  }
+]

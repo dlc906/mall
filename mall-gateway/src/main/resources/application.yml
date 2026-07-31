@@ -1,0 +1,88 @@
+spring:
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    database: 0
+    lettuce:
+      pool:
+        max-active: 20
+        max-idle: 10
+        min-idle: 5
+
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        # 认证服务
+        - id: mall-auth
+          uri: lb://mall-auth
+          predicates:
+            - Path=/api/auth/**
+          filters:
+            - StripPrefix=0
+
+        # 用户服务
+        - id: mall-user
+          uri: lb://mall-user
+          predicates:
+            - Path=/api/user/**
+          filters:
+            - StripPrefix=0
+
+        # 商品服务
+        - id: mall-product
+          uri: lb://mall-product
+          predicates:
+            - Path=/api/product/**
+          filters:
+            - StripPrefix=0
+
+        # 购物车服务（路由到订单模块）
+        - id: mall-cart
+          uri: lb://mall-order
+          predicates:
+            - Path=/api/cart/**
+          filters:
+            - StripPrefix=0
+
+        # 订单服务
+        - id: mall-order
+          uri: lb://mall-order
+          predicates:
+            - Path=/api/order/**
+          filters:
+            - StripPrefix=0
+
+        # 支付服务
+        - id: mall-payment
+          uri: lb://mall-payment
+          predicates:
+            - Path=/api/payment/**
+          filters:
+            - StripPrefix=0
+
+        # 分销服务
+        - id: mall-distribution
+          uri: lb://mall-distribution
+          predicates:
+            - Path=/api/distribution/**
+          filters:
+            - StripPrefix=0
+
+  main:
+    web-application-type: reactive
+    allow-bean-definition-overriding: true
+
+# Sentinel 控制台
+spring.cloud.sentinel:
+  transport:
+    dashboard: 127.0.0.1:18080
+    port: 8720
+  eager: true
+
+logging:
+  level:
+    com.mall: debug

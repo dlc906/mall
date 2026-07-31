@@ -1,0 +1,70 @@
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.elasticsearch.ElasticsearchRestClientAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.elasticsearch.ElasticsearchDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.elasticsearch.ElasticsearchRepositoriesAutoConfiguration
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/mall_product?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      initial-size: 5
+      min-idle: 5
+      max-active: 50
+      max-wait: 60000
+
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    database: 0
+
+  elasticsearch:
+    uris:
+      - http://127.0.0.1:9200
+
+rocketmq:
+  name-server: 127.0.0.1:9876
+  producer:
+    group: product-producer-group
+
+seata:
+  tx-service-group: mall-tx-group
+  service:
+    vgroup-mapping:
+      mall-tx-group: default
+    grouplist:
+      default: 127.0.0.1:8091
+
+mybatis-plus:
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+  configuration:
+    map-underscore-to-camel-case: true
+
+knife4j:
+  enable: true
+  openapi:
+    title: 商品服务 API
+    description: 商品分类、商品管理、ES搜索
+    version: 1.0
+    group:
+      product:
+        group-name: product
+        api-rule: package
+        api-rule-resources:
+          - com.mall.product.controller
+
+logging:
+  level:
+    com.mall: debug
