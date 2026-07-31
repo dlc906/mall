@@ -26,6 +26,12 @@ sessionStore/
 work/
 conf/
 
+# ===== 启动/管理脚本（本地使用，不上传） =====
+scripts/
+start-dev-env.bat
+start-dev-env.ps1
+stop-dev-env.bat
+
 # ===== Agent 工具目录 =====
 .reasonix/
 

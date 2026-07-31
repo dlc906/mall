@@ -79,21 +79,7 @@ Vue 3 前端 → Gateway(8080) → Nacos注册中心
 
 ### 方式一：本机开发
 
-#### 1. 启动中间件
-
-双击 `start-dev-env.bat` 一键启动（会自动跳过已运行的服务），或逐个启动：
-
-| 中间件 | 端口 | 启动方式 |
-|--------|------|---------|
-| Nacos | 8848 | `nacos/bin/startup.cmd -m standalone` |
-| Redis | 6379 | `redis-server.exe` |
-| RocketMQ NameServer | 9876 | `mqnamesrv.cmd` |
-| RocketMQ Broker | 10911 | `mqbroker.cmd -n 127.0.0.1:9876 -c broker.conf` |
-| Seata Server | 8091 | `seata-server.bat -p 8091` |
-| XXL-Job Admin | 8100 | `java -jar xxl-job-admin.jar --server.port=8100` |
-| Sentinel Dashboard | 18080 | `java -jar sentinel-dashboard.jar --server.port=18080` |
-
-#### 2. 初始化数据库
+#### 1. 初始化数据库
 
 ```bash
 mysql -u root -p < doc/sql/init-all.sql
@@ -101,13 +87,13 @@ mysql -u root -p < doc/sql/init-all.sql
 
 XXL-Job 需要额外执行 `tables_xxl_job.sql` 创建 `xxl_job` 数据库。
 
-#### 3. Nacos 配置
+#### 2. Nacos 配置
 
 在 Nacos 控制台 (http://127.0.0.1:8848/nacos) `public` 命名空间导入：
 
 - `doc/nacos-config/common-config.yaml` — 公共配置
 
-#### 4. 启动微服务
+#### 3. 启动微服务
 
 ```bash
 # 编译
@@ -124,7 +110,7 @@ mall-distribution → 8086 (可选，测试分销时才需要)
 mall-job      →  8087   (可选，定时任务)
 ```
 
-#### 5. 启动前端
+#### 4. 启动前端
 
 ```bash
 cd mall-web
@@ -132,11 +118,9 @@ npm install
 npm run dev
 ```
 
-或双击 `scripts/start-frontend.bat`。
-
 访问 http://localhost:5173
 
-#### 6. 测试账号
+#### 5. 测试账号
 
 | 用户名 | 密码 | 说明 |
 |--------|------|------|
