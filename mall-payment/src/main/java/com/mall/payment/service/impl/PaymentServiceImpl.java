@@ -49,6 +49,10 @@ public class PaymentServiceImpl implements PaymentService {
                 throw new BizException("支付创建失败");
             }
         });
+        // 回调保证成功时返回非 null（失败已抛异常），此处防御性判空
+        if (record == null) {
+            throw new BizException("支付创建失败");
+        }
 
         // ========== 阶段二：事务外同步通知订单服务 ==========
         boolean syncSuccess = false;
@@ -91,18 +95,16 @@ public class PaymentServiceImpl implements PaymentService {
         // 注意：订单服务不可用时跳过校验（留待定时任务补偿），不阻止支付流程
         boolean orderVerified = false;
         try {
-            com.mall.common.entity.Result<?> result = orderFeignClient.getOrderByOrderNo(req.getOrderNo());
+            com.mall.common.entity.Result<com.mall.payment.feign.dto.OrderDTO> result =
+                    orderFeignClient.getOrderByOrderNo(req.getOrderNo());
             if (result == null || result.getData() == null) {
                 throw new BizException("订单不存在");
             }
-            @SuppressWarnings("unchecked")
-            Map<String, Object> orderMap = (Map<String, Object>) result.getData();
-            Object orderUserId = orderMap.get("userId");
-            if (orderUserId == null || !orderUserId.toString().equals(userId.toString())) {
+            com.mall.payment.feign.dto.OrderDTO orderDTO = result.getData();
+            if (orderDTO.getUserId() == null || !orderDTO.getUserId().toString().equals(userId.toString())) {
                 throw new BizException("无权支付此订单");
             }
-            Object orderStatus = orderMap.get("status");
-            if (orderStatus != null && !"0".equals(orderStatus.toString())) {
+            if (orderDTO.getStatus() != null && orderDTO.getStatus() != 0) {
                 throw new BizException("订单状态不允许支付");
             }
             orderVerified = true;
@@ -217,17 +219,47 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     public PayResp refund(Long userId, String orderNo) {
-        return transactionTemplate.execute(status -> {
+        // ========== 阶段一：事务内创建退款记录 ==========
+        PaymentRecord refundRecord = transactionTemplate.execute(status -> {
             try {
-                return doRefund(userId, orderNo);
+                return doCreateRefundRecord(userId, orderNo);
             } catch (BizException e) {
                 status.setRollbackOnly();
                 throw e;
             }
         });
+        // 回调保证成功时返回非 null（失败已抛异常），此处防御性判空
+        if (refundRecord == null) {
+            throw new BizException("退款创建失败");
+        }
+
+        // ========== 阶段二：事务外同步通知订单服务（改状态 + 回滚库存） ==========
+        boolean syncSuccess = false;
+        try {
+            com.mall.common.entity.Result<Void> result = orderFeignClient.refundOrder(orderNo);
+            if (result != null && result.isSuccess()) {
+                syncSuccess = true;
+            }
+        } catch (Exception e) {
+            log.error("Refund sync failed for orderNo={}, will rely on MQ", orderNo, e);
+        }
+
+        if (!syncSuccess) {
+            // 同步失败 → MQ 兜底（订单服务恢复后自动消费，幂等处理）
+            paymentProducer.sendPayResult(orderNo, 6);
+            log.warn("Refund sync failed, MQ sent for retry: orderNo={}", orderNo);
+        }
+
+        return PayResp.builder()
+                .paymentNo(refundRecord.getPaymentNo())
+                .orderNo(orderNo)
+                .amount(refundRecord.getAmount())
+                .status(1)
+                .success(true)
+                .build();
     }
 
-    private PayResp doRefund(Long userId, String orderNo) {
+    private PaymentRecord doCreateRefundRecord(Long userId, String orderNo) {
         PaymentRecord payRecord = paymentRecordMapper.selectOne(new LambdaQueryWrapper<PaymentRecord>()
                 .eq(PaymentRecord::getOrderNo, orderNo)
                 .eq(PaymentRecord::getPayType, 0)
@@ -263,14 +295,7 @@ public class PaymentServiceImpl implements PaymentService {
             throw new BizException("该订单已退款");
         }
 
-        paymentProducer.sendPayResult(orderNo, 6);
-
-        return PayResp.builder()
-                .paymentNo(refundRecord.getPaymentNo())
-                .orderNo(orderNo)
-                .amount(refundRecord.getAmount())
-                .status(1)
-                .success(true)
-                .build();
+        log.info("Refund record created: paymentNo={}, orderNo={}", refundRecord.getPaymentNo(), orderNo);
+        return refundRecord;
     }
 }

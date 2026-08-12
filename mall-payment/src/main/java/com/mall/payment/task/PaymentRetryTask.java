@@ -126,16 +126,13 @@ public class PaymentRetryTask {
      * 查询订单服务的实际状态
      * @return 1=已支付, 0=待支付, null=查询失败
      */
-    @SuppressWarnings("unchecked")
     private Integer queryOrderStatus(String orderNo) {
         try {
-            Result<?> result = orderFeignClient.getOrderByOrderNo(orderNo);
+            Result<com.mall.payment.feign.dto.OrderDTO> result = orderFeignClient.getOrderByOrderNo(orderNo);
             if (result == null || result.getData() == null) {
                 return null;
             }
-            Map<String, Object> orderMap = (Map<String, Object>) result.getData();
-            Object status = orderMap.get("status");
-            return status != null ? Integer.valueOf(status.toString()) : null;
+            return result.getData().getStatus();
         } catch (Exception e) {
             log.warn("PaymentRetryTask: failed to query order status for orderNo={}", orderNo, e);
             return null;

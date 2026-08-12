@@ -51,10 +51,12 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public LoginResp refresh(String refreshToken) {
-        Long userId = JwtUtils.getUserId(refreshToken);
-        if (userId == null) {
+        // 严格解析 + 校验必须是 refresh 类型（纵深防御，防止 access token 被当作 refresh 使用）
+        io.jsonwebtoken.Claims claims = JwtUtils.parseToken(refreshToken);
+        if (claims == null || !"refresh".equals(claims.get("type", String.class))) {
             throw new BizException(CommonConstants.UNAUTHORIZED, "RefreshToken无效");
         }
+        Long userId = Long.valueOf(claims.getSubject());
         // Check if refresh token exists in Redis
         String redisKey = RedisKey.USER_REFRESH_TOKEN + userId;
         String savedToken = redisUtils.get(redisKey, String.class);
@@ -70,7 +72,8 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public void logout(String accessToken) {
-        Long userId = JwtUtils.getUserId(accessToken);
+        // 宽容解析：即使 access token 已过期，也要清理 Redis 中的用户状态
+        Long userId = JwtUtils.getUserIdAllowExpired(accessToken);
         if (userId != null) {
             // Clear refresh token from Redis
             redisUtils.delete(RedisKey.USER_REFRESH_TOKEN + userId);

@@ -3,6 +3,7 @@ package com.mall.order.service.impl;
 import cn.hutool.core.util.IdUtil;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.mall.common.constant.RedisKey;
 import com.mall.common.exception.BizException;
@@ -80,16 +81,17 @@ public class OrderServiceImpl implements OrderService {
 
         // Get real address info from user service
         try {
-            com.mall.common.entity.Result<?> addrResult = userFeignClient.getAddress(req.getAddressId());
+            com.mall.common.entity.Result<com.mall.order.feign.dto.AddressDTO> addrResult =
+                    userFeignClient.getAddress(req.getAddressId());
             if (addrResult != null && addrResult.getData() != null) {
-                java.util.Map<String, Object> rawAddr = (java.util.Map<String, Object>) addrResult.getData();
-                order.setReceiverName((String) rawAddr.get("receiverName"));
-                order.setReceiverPhone((String) rawAddr.get("receiverPhone"));
+                com.mall.order.feign.dto.AddressDTO addr = addrResult.getData();
+                order.setReceiverName(addr.getReceiverName());
+                order.setReceiverPhone(addr.getReceiverPhone());
                 String fullAddr = String.format("%s%s%s%s",
-                        rawAddr.get("province") != null ? rawAddr.get("province") : "",
-                        rawAddr.get("city") != null ? rawAddr.get("city") : "",
-                        rawAddr.get("district") != null ? rawAddr.get("district") : "",
-                        rawAddr.get("detailAddress") != null ? rawAddr.get("detailAddress") : "");
+                        addr.getProvince() != null ? addr.getProvince() : "",
+                        addr.getCity() != null ? addr.getCity() : "",
+                        addr.getDistrict() != null ? addr.getDistrict() : "",
+                        addr.getDetailAddress() != null ? addr.getDetailAddress() : "");
                 order.setReceiverAddress(fullAddr);
             } else {
                 throw new BizException("收货地址获取失败");
@@ -118,14 +120,15 @@ public class OrderServiceImpl implements OrderService {
                 }
 
                 // Get real product info from product service
-                com.mall.common.entity.Result<?> prodResult = productFeignClient.getProductDetail(itemReq.getProductId());
+                com.mall.common.entity.Result<com.mall.order.feign.dto.ProductDTO> prodResult =
+                        productFeignClient.getProductDetail(itemReq.getProductId());
                 if (prodResult == null || prodResult.getData() == null) {
                     throw new BizException("商品信息获取失败");
                 }
-                java.util.Map<String, Object> productMap = (java.util.Map<String, Object>) prodResult.getData();
-                String productName = (String) productMap.get("name");
-                String productImage = (String) productMap.get("mainImage");
-                BigDecimal productPrice = new BigDecimal(productMap.get("price").toString());
+                com.mall.order.feign.dto.ProductDTO productDTO = prodResult.getData();
+                String productName = productDTO.getName();
+                String productImage = productDTO.getMainImage();
+                BigDecimal productPrice = productDTO.getPrice();
 
                 // Deduct stock via Feign
                 try {
@@ -219,15 +222,17 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional
     public void paySuccess(String orderNo) {
-        Order order = getByOrderNo(orderNo);
-        if (order == null || order.getStatus() != 0) {
-            log.warn("Order {} not found or status is not PENDING_PAY", orderNo);
+        // 条件更新：只有当前仍是 status=0（待支付）才置为已支付，避免与超时取消竞态
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<Order>()
+                .eq(Order::getOrderNo, orderNo)
+                .eq(Order::getStatus, 0)
+                .set(Order::getStatus, 1)
+                .set(Order::getPayTime, LocalDateTime.now()));
+
+        if (updated == 0) {
+            log.warn("Order {} status changed, skip pay success (可能已被取消或重复支付)", orderNo);
             return;
         }
-
-        order.setStatus(1); // PAID
-        order.setPayTime(LocalDateTime.now());
-        orderMapper.updateById(order);
 
         // Increment sales for each product in this order
         List<OrderItem> items = orderItemMapper.selectList(
@@ -275,10 +280,19 @@ public class OrderServiceImpl implements OrderService {
                 .le(Order::getCreateTime, threshold));
 
         for (Order order : unpaidOrders) {
-            order.setStatus(4);
-            order.setCancelTime(LocalDateTime.now());
-            order.setCancelReason("超时未支付，系统自动取消");
-            orderMapper.updateById(order);
+            // 条件更新：只有当前仍是 status=0（待支付）才取消，避免与支付竞态
+            int updated = orderMapper.update(null, new LambdaUpdateWrapper<Order>()
+                    .eq(Order::getId, order.getId())
+                    .eq(Order::getStatus, 0)
+                    .set(Order::getStatus, 4)
+                    .set(Order::getCancelTime, LocalDateTime.now())
+                    .set(Order::getCancelReason, "超时未支付，系统自动取消"));
+
+            if (updated == 0) {
+                // 该订单已被其他操作（如支付）更新，跳过库存回滚
+                log.info("Order {} status changed, skip cancellation", order.getOrderNo());
+                continue;
+            }
 
             // Rollback stock with retry
             List<OrderItem> items = orderItemMapper.selectList(
@@ -315,6 +329,29 @@ public class OrderServiceImpl implements OrderService {
                 new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderNo, orderNo));
         rollbackStock(items);
         log.info("Order {} cancelled by orderNo: {}", orderNo, reason);
+    }
+
+    @Override
+    @Transactional
+    public void refundOrder(String orderNo) {
+        // 条件更新：只有 status=1（已支付）才允许退款 → status=6（已退款），避免竞态/重复退款
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<Order>()
+                .eq(Order::getOrderNo, orderNo)
+                .eq(Order::getStatus, 1)
+                .set(Order::getStatus, 6)
+                .set(Order::getCancelTime, LocalDateTime.now())
+                .set(Order::getCancelReason, "用户申请退款"));
+
+        if (updated == 0) {
+            log.warn("Order {} status changed, skip refund (可能已退款或状态不允许)", orderNo);
+            return;
+        }
+
+        // 回滚库存（复用带重试的 rollbackStock）
+        List<OrderItem> items = orderItemMapper.selectList(
+                new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderNo, orderNo));
+        rollbackStock(items);
+        log.info("Order {} refunded, stock rolled back for {} items", orderNo, items.size());
     }
 
     @Override

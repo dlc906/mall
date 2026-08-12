@@ -92,6 +92,13 @@ public class OrderController {
         return Result.success();
     }
 
+    @Operation(summary = "退款回调(内部Feign)")
+    @PutMapping("/refund/{orderNo}")
+    public Result<Void> refund(@PathVariable String orderNo) {
+        orderService.refundOrder(orderNo);
+        return Result.success();
+    }
+
     @Operation(summary = "获取订单状态枚举")
     @GetMapping("/statuses")
     public Result<Map<Integer, String>> getStatuses() {

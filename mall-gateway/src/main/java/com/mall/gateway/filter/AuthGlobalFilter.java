@@ -71,23 +71,37 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             return unauthorized(exchange, "Token已失效，请重新登录");
         }
 
-        // 校验Token
-        Long userId = JwtUtils.getUserId(token);
-        if (userId == null) {
-            return unauthorized(exchange, "Token无效");
+        // 校验Token（严格解析：无效或过期返回null）
+        io.jsonwebtoken.Claims claims = JwtUtils.parseToken(token);
+        if (claims == null) {
+            return unauthorized(exchange, "Token无效或已过期");
         }
+
+        // 只允许 access token 访问业务接口，防止 refresh token（7天）被当作 access 使用
+        String tokenType = claims.get("type", String.class);
+        if (!"access".equals(tokenType)) {
+            return unauthorized(exchange, "Token类型错误，请使用AccessToken");
+        }
+
+        Long userId = Long.valueOf(claims.getSubject());
 
         // 将用户信息传递给下游服务
         ServerHttpRequest mutatedRequest = request.mutate()
                 .header("X-User-Id", String.valueOf(userId))
-                .header("X-Username", JwtUtils.getUsername(token))
+                .header("X-Username", String.valueOf(claims.get("username")))
                 .build();
 
         return chain.filter(exchange.mutate().request(mutatedRequest).build());
     }
 
+    /**
+     * 白名单路径段匹配：
+     * 精确匹配白名单路径本身，或匹配其下子路径（如 /api/product/detail/1）。
+     * 不使用纯 startsWith，避免 /api/user/verify-code-xxx 等前缀相似路径被误放行。
+     */
     private boolean isWhitePath(String path) {
-        return WHITE_LIST.stream().anyMatch(path::startsWith);
+        return WHITE_LIST.stream().anyMatch(white ->
+                path.equals(white) || path.startsWith(white + "/"));
     }
 
     private Mono<Void> unauthorized(ServerWebExchange exchange, String message) {

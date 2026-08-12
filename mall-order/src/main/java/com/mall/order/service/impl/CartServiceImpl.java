@@ -158,12 +158,11 @@ public class CartServiceImpl implements CartService {
      */
     private void refreshStock(CartItemResp item) {
         try {
-            com.mall.common.entity.Result<?> result = productFeignClient.getProductDetail(item.getProductId());
+            com.mall.common.entity.Result<com.mall.order.feign.dto.ProductDTO> result =
+                    productFeignClient.getProductDetail(item.getProductId());
             if (result != null && result.getData() != null) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> map = (Map<String, Object>) result.getData();
-                Integer currentStock = map.get("stock") != null
-                        ? Integer.valueOf(map.get("stock").toString())
+                Integer currentStock = result.getData().getStock() != null
+                        ? result.getData().getStock()
                         : 0;
                 item.setStock(currentStock);
                 if (item.getQuantity() > currentStock) {
@@ -178,18 +177,18 @@ public class CartServiceImpl implements CartService {
 
     private CartItemResp fetchProductInfo(Long productId) {
         try {
-            com.mall.common.entity.Result<?> result = productFeignClient.getProductDetail(productId);
+            com.mall.common.entity.Result<com.mall.order.feign.dto.ProductDTO> result =
+                    productFeignClient.getProductDetail(productId);
             if (result == null || result.getData() == null) {
                 throw new BizException("商品信息获取失败");
             }
-            @SuppressWarnings("unchecked")
-            Map<String, Object> map = (Map<String, Object>) result.getData();
+            com.mall.order.feign.dto.ProductDTO dto = result.getData();
             return CartItemResp.builder()
                     .productId(productId)
-                    .name((String) map.get("name"))
-                    .image((String) map.get("mainImage"))
-                    .price(new BigDecimal(map.get("price").toString()))
-                    .stock(map.get("stock") != null ? Integer.valueOf(map.get("stock").toString()) : 0)
+                    .name(dto.getName())
+                    .image(dto.getMainImage())
+                    .price(dto.getPrice())
+                    .stock(dto.getStock() != null ? dto.getStock() : 0)
                     .quantity(0)
                     .checked(true)
                     .build();

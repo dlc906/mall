@@ -16,6 +16,7 @@ public interface OrderService {
     void cancelOrder(Long userId, Long orderId, String reason);
     void cancelUnpaidOrders();
     void cancelByOrderNo(String orderNo, String reason);
+    void refundOrder(String orderNo);
     Order getByOrderNo(String orderNo);
     void confirmReceive(Long userId, Long orderId);
 }
