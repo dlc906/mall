@@ -9,12 +9,13 @@
         <div class="detail-stock">库存: {{ product.stock }} 件 | 已售: {{ product.sales || 0 }}</div>
         <div class="detail-quantity">
           <span>数量:</span>
-          <el-input-number v-model="quantity" :min="1" :max="product.stock" />
+          <el-input-number v-model="quantity" :min="1" :max="Math.max(product.stock, 1)" :disabled="outOfStock" />
         </div>
         <div class="detail-buttons">
-          <el-button type="primary" size="large" @click="addToCart">加入购物车</el-button>
-          <el-button type="danger" size="large" @click="buyNow">立即购买</el-button>
+          <el-button type="primary" size="large" :disabled="outOfStock" @click="addToCart">加入购物车</el-button>
+          <el-button type="danger" size="large" :disabled="outOfStock" @click="buyNow">立即购买</el-button>
         </div>
+        <el-tag v-if="outOfStock" type="danger" effect="dark" style="margin-top:8px">已售罄</el-tag>
       </div>
     </div>
     <div class="detail-desc" v-if="product">
@@ -25,7 +26,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import request from '../utils/request'
 import { useCartStore } from '../stores/cart'
@@ -37,6 +38,8 @@ const cartStore = useCartStore()
 const product = ref(null)
 const loading = ref(false)
 const quantity = ref(1)
+// 缺货状态：库存为 0 时禁用购买
+const outOfStock = computed(() => !product.value || product.value.stock <= 0)
 
 async function fetchDetail() {
   loading.value = true

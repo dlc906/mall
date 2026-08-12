@@ -15,8 +15,13 @@
       <div class="items">
         <h4>商品信息</h4>
         <div v-for="item in orderResp.items" :key="item.id" class="order-item">
-          <el-image :src="item.productImage" fit="cover" style="width:80px;height:80px" />
-          <span>{{ item.productName }}</span>
+          <el-image
+            :src="item.productImage"
+            fit="cover"
+            style="width:80px;height:80px;cursor:pointer"
+            @click="goProduct(item.productId)"
+          />
+          <span class="product-name" @click="goProduct(item.productId)">{{ item.productName }}</span>
           <span>¥{{ item.productPrice }} × {{ item.quantity }}</span>
           <span class="item-total">¥{{ (item.productPrice * item.quantity).toFixed(2) }}</span>
         </div>
@@ -30,13 +35,18 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import request from '../utils/request'
 
 const route = useRoute()
+const router = useRouter()
 const orderResp = ref(null)
 const loading = ref(false)
 const statusMap = { 0: '待支付', 1: '已支付', 2: '已发货', 3: '已完成', 4: '已取消', 5: '退款中', 6: '已退款' }
+
+function goProduct(productId) {
+  router.push(`/product/${productId}`)
+}
 
 async function fetchDetail() {
   loading.value = true
@@ -61,6 +71,8 @@ onMounted(fetchDetail)
 .receiver-info p { margin-top: 4px; color: #666; }
 .items h4 { margin-bottom: 12px; }
 .order-item { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid #f5f5f5; }
+.product-name { color: #409eff; cursor: pointer; }
+.product-name:hover { text-decoration: underline; }
 .item-total { color: #f56c6c; font-weight: bold; margin-left: auto; }
 .order-total { text-align: right; margin-top: 16px; font-size: 16px; }
 .total-price { font-size: 24px; color: #f56c6c; font-weight: bold; }

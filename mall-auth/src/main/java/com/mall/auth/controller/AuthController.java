@@ -27,6 +27,12 @@ public class AuthController {
         return Result.success(authService.login(req));
     }
 
+    @Operation(summary = "获取图片验证码")
+    @GetMapping("/captcha")
+    public Result<com.mall.auth.model.resp.CaptchaResp> captcha() {
+        return Result.success(authService.generateCaptcha());
+    }
+
     @Operation(summary = "用户注册")
     @PostMapping("/register")
     public Result<LoginResp> register(@Valid @RequestBody RegisterReq req) {

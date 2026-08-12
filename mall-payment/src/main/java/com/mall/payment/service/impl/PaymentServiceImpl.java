@@ -287,6 +287,7 @@ public class PaymentServiceImpl implements PaymentService {
         refundRecord.setStatus(1);
         refundRecord.setTradeNo("REFUND-" + System.currentTimeMillis());
         refundRecord.setPayTime(LocalDateTime.now());
+        refundRecord.setRetryCount(0);
         refundRecord.setRemark("模拟退款成功");
 
         try {

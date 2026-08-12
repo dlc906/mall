@@ -22,6 +22,8 @@ import org.redisson.api.RedissonClient;
 import io.seata.spring.annotation.GlobalTransactional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.annotation.Resource;
 import java.math.BigDecimal;
@@ -70,6 +72,26 @@ public class OrderServiceImpl implements OrderService {
     }
 
     private OrderResp doCreateOrder(Long userId, CreateOrderReq req) {
+        // 事务回滚补偿：Seata/本地事务回滚时只恢复 MySQL，Redis 扣减需手动加回，
+        // 否则会出现"MySQL 库存回滚但 Redis 库存被吞"的数据分裂。
+        List<CreateOrderReq.OrderItemReq> deductedItems = new ArrayList<>();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == STATUS_ROLLED_BACK && !deductedItems.isEmpty()) {
+                    for (CreateOrderReq.OrderItemReq item : deductedItems) {
+                        try {
+                            productFeignClient.updateStock(item.getProductId(), item.getQuantity());
+                            log.warn("Compensate Redis stock after rollback: product={}, +{}",
+                                    item.getProductId(), item.getQuantity());
+                        } catch (Exception e) {
+                            log.error("Compensate stock failed: product={}", item.getProductId(), e);
+                        }
+                    }
+                }
+            }
+        });
+
         // Build order
         Order order = new Order();
         order.setOrderNo(generateOrderNo());
@@ -106,8 +128,6 @@ public class OrderServiceImpl implements OrderService {
         // Process each item with Redisson distributed lock for stock deduction
         BigDecimal totalAmount = BigDecimal.ZERO;
         List<OrderItem> orderItems = new ArrayList<>();
-        // 记录已成功扣库存的商品，用于部分失败时回滚
-        List<CreateOrderReq.OrderItemReq> deductedItems = new ArrayList<>();
 
         for (CreateOrderReq.OrderItemReq itemReq : req.getItems()) {
             String lockKey = RedisKey.LOCK_PREFIX + "stock:" + itemReq.getProductId();
@@ -132,7 +152,18 @@ public class OrderServiceImpl implements OrderService {
 
                 // Deduct stock via Feign
                 try {
-                    productFeignClient.updateStock(itemReq.getProductId(), -itemReq.getQuantity());
+                    com.mall.common.entity.Result<Void> stockResult =
+                            productFeignClient.updateStock(itemReq.getProductId(), -itemReq.getQuantity());
+                    // 关键：必须检查 Feign 返回的业务 code。
+                    // product 端库存不足时返回 HTTP 200 + code=500，Feign 不会抛异常，
+                    // 不检查 code 会导致"扣减失败但订单继续创建"的超卖。
+                    if (stockResult == null || !stockResult.isSuccess()) {
+                        String msg = stockResult != null && stockResult.getMessage() != null
+                                ? stockResult.getMessage() : "库存不足";
+                        throw new BizException(msg);
+                    }
+                } catch (BizException e) {
+                    throw e;
                 } catch (Exception e) {
                     log.error("Failed to deduct stock for product {}", itemReq.getProductId(), e);
                     throw new BizException("商品库存扣减失败");

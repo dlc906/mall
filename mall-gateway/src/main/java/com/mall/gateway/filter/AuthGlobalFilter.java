@@ -35,6 +35,7 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             "/api/auth/login",
             "/api/auth/register",
             "/api/auth/refresh",
+            "/api/auth/captcha",
             "/api/user/register",
             "/api/user/verify-code",
             "/api/product/list",

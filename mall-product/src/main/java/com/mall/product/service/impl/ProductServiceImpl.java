@@ -24,12 +24,24 @@ import org.springframework.util.StringUtils;
 
 import javax.annotation.Resource;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 public class ProductServiceImpl implements ProductService {
+
+    /** 空值标记（防穿透）：商品不存在时缓存此标记 */
+    private static final String EMPTY_MARK = "EMPTY_PRODUCT";
+    /** 空值缓存 TTL：60 秒 */
+    private static final long EMPTY_TTL_SECONDS = 60;
+    /** 缓存基础 TTL：5 分钟 */
+    private static final long BASE_TTL_SECONDS = 5 * 60;
+    /** TTL 随机偏移上限：0~120 秒（防雪崩） */
+    private static final long TTL_JITTER_SECONDS = 120;
+    /** 防击穿互斥锁 TTL：3 秒 */
+    private static final long LOCK_TIMEOUT_SECONDS = 3;
 
     @Resource
     private ProductMapper productMapper;
@@ -58,20 +70,62 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public Product getProductDetail(Long id) {
-        // Try Redis cache first
+        // ========== 缓存三防：防穿透 + 防击穿 + 防雪崩 ==========
         String cacheKey = RedisKey.PRODUCT_INFO + id;
+
+        // 1. 读缓存
         Object cached = redisUtils.get(cacheKey);
         if (cached != null) {
+            // 命中空值标记（防穿透缓存）→ 直接返回不存在
+            if (EMPTY_MARK.equals(cached)) {
+                throw new BizException("商品不存在");
+            }
             return (Product) cached;
         }
 
+        // 2. 缓存未命中 → 互斥锁防击穿（只有一个线程查库回填，其余等待后重读缓存）
+        String lockKey = RedisKey.LOCK_PREFIX + "product:info:" + id;
+        boolean locked = redisUtils.setIfAbsent(lockKey, "1", LOCK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        if (locked) {
+            try {
+                Product product = productMapper.selectById(id);
+                if (product == null) {
+                    // 防穿透：缓存空值标记（短 TTL），避免恶意请求反复打 DB
+                    redisUtils.set(cacheKey, EMPTY_MARK, EMPTY_TTL_SECONDS, TimeUnit.SECONDS);
+                    throw new BizException("商品不存在");
+                }
+                // 防雪崩：随机 TTL（5分钟基础 + 0~120秒随机偏移），避免大量缓存同时失效
+                long ttl = BASE_TTL_SECONDS
+                        + ThreadLocalRandom.current().nextLong(0, TTL_JITTER_SECONDS + 1);
+                redisUtils.set(cacheKey, product, ttl, TimeUnit.SECONDS);
+                return product;
+            } finally {
+                redisUtils.delete(lockKey);
+            }
+        }
+
+        // 3. 未拿到锁：等其他线程回填完成后重读缓存
+        try {
+            Thread.sleep(50);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        Object retry = redisUtils.get(cacheKey);
+        if (retry != null) {
+            if (EMPTY_MARK.equals(retry)) {
+                throw new BizException("商品不存在");
+            }
+            return (Product) retry;
+        }
+
+        // 4. 兜底：锁已释放/超时且缓存仍未回填，直接查库（避免无限等待）
         Product product = productMapper.selectById(id);
         if (product == null) {
             throw new BizException("商品不存在");
         }
-
-        // Cache for 5 minutes
-        redisUtils.set(cacheKey, product, 5, TimeUnit.MINUTES);
+        long ttl = BASE_TTL_SECONDS + ThreadLocalRandom.current().nextLong(0, TTL_JITTER_SECONDS + 1);
+        redisUtils.set(cacheKey, product, ttl, TimeUnit.SECONDS);
         return product;
     }
 
@@ -83,6 +137,9 @@ public class ProductServiceImpl implements ProductService {
         if (product.getStatus() == null) product.setStatus(1);
         if (product.getSales() == null) product.setSales(0);
         productMapper.insert(product);
+
+        // 清除可能存在的空值缓存（防穿透标记），避免新商品 60 秒内查不到
+        redisUtils.delete(RedisKey.PRODUCT_INFO + product.getId());
 
         // Sync to ES
         syncToEs(product);
@@ -130,8 +187,20 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public void updateStock(Long id, int quantity) {
-        // Atomically decrement stock in Redis
         String stockKey = RedisKey.PRODUCT_STOCK + id;
+
+        // Redis 库存 key 缺失时（服务重启/Redis 重启/缓存丢失），从 MySQL 加载初始库存
+        Object current = redisUtils.get(stockKey);
+        if (current == null) {
+            Product p = productMapper.selectById(id);
+            if (p == null) {
+                throw new BizException("商品不存在");
+            }
+            redisUtils.set(stockKey, p.getStock());
+            log.info("Stock key initialized from MySQL: productId={}, stock={}", id, p.getStock());
+        }
+
+        // Atomically decrement stock in Redis
         long newStock = redisUtils.increment(stockKey, quantity); // quantity is negative
 
         if (newStock < 0) {

@@ -15,13 +15,13 @@
           <span>操作</span>
         </div>
         <div v-for="item in cartStore.items" :key="item.productId" class="cart-item">
-          <el-checkbox v-model="item.checked" @change="cartStore.saveToStorage()" />
+          <el-checkbox v-model="item.checked" @change="cartStore.toggleCheck(item.productId)" />
           <div class="item-info" @click="$router.push(`/product/${item.productId}`)">
             <el-image :src="item.image" fit="cover" style="width:80px;height:80px;border-radius:4px" />
             <span>{{ item.name }}</span>
           </div>
           <span class="item-price">¥{{ item.price }}</span>
-          <el-input-number v-model="item.quantity" :min="1" :max="item.stock" size="small" @change="val => cartStore.updateQuantity(item.productId, val)" />
+          <el-input-number v-model="item.quantity" :min="1" :max="Math.max(item.stock, 1)" size="small" @change="val => cartStore.updateQuantity(item.productId, val)" />
           <span class="item-total">¥{{ (item.price * item.quantity).toFixed(2) }}</span>
           <el-button type="danger" link @click="cartStore.removeItem(item.productId)">删除</el-button>
         </div>

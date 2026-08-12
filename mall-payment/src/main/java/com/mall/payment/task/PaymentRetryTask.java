@@ -72,6 +72,82 @@ public class PaymentRetryTask {
     }
 
     /**
+     * 退款补偿：扫描已退款（payType=1, status=1）但订单服务可能未同步的记录，
+     * 确保订单状态已更新（1→6）且库存已回滚。
+     */
+    @Scheduled(fixedDelay = 30_000)  // 每 30 秒执行一次
+    public void retryPendingRefunds() {
+        LocalDateTime deadline = LocalDateTime.now().minusMinutes(TIMEOUT_MINUTES);
+
+        List<PaymentRecord> pendingRefunds = paymentRecordMapper.selectList(
+                new LambdaQueryWrapper<PaymentRecord>()
+                        .eq(PaymentRecord::getStatus, 1)
+                        .eq(PaymentRecord::getPayType, 1)
+                        .lt(PaymentRecord::getCreateTime, deadline));
+
+        if (pendingRefunds.isEmpty()) {
+            return;
+        }
+
+        log.info("PaymentRetryTask: found {} pending refund records to process", pendingRefunds.size());
+
+        for (PaymentRecord record : pendingRefunds) {
+            try {
+                processPendingRefund(record);
+            } catch (Exception e) {
+                log.error("PaymentRetryTask: error processing refund paymentNo={}", record.getPaymentNo(), e);
+            }
+        }
+    }
+
+    /**
+     * 处理单条退款记录：确保订单服务已同步（状态1→6 + 库存回滚）
+     */
+    private void processPendingRefund(PaymentRecord record) {
+        int currentRetry = record.getRetryCount() != null ? record.getRetryCount() : 0;
+
+        // 查询订单服务实际状态
+        Integer orderStatus = queryOrderStatus(record.getOrderNo());
+        if (orderStatus == null) {
+            // 订单服务不可用，跳过本轮，等下一轮
+            log.warn("PaymentRetryTask: order service unavailable for refund orderNo={}, skip", record.getOrderNo());
+            return;
+        }
+
+        if (orderStatus == 6) {
+            // 订单已退款，流程完成
+            log.info("PaymentRetryTask: refund already applied for orderNo={}", record.getOrderNo());
+            return;
+        }
+
+        // 订单未退款（仍是已支付或其他状态），重试同步
+        int nextRetry = currentRetry + 1;
+        if (nextRetry > MAX_RETRIES) {
+            // 重试超限：标记人工介入
+            paymentRecordMapper.update(null, new LambdaUpdateWrapper<PaymentRecord>()
+                    .eq(PaymentRecord::getPaymentNo, record.getPaymentNo())
+                    .set(PaymentRecord::getRemark, "退款通知重试超限，需人工介入（订单状态=" + orderStatus + "）")
+                    .set(PaymentRecord::getLastRetryTime, LocalDateTime.now()));
+            log.error("PaymentRetryTask: refund retry exhausted for orderNo={}, MANUAL INTERVENTION REQUIRED",
+                    record.getOrderNo());
+        } else {
+            // 重试：同步调用退款 + MQ 兜底
+            paymentService.updateRetryInfo(record.getPaymentNo(), nextRetry);
+            try {
+                com.mall.common.entity.Result<Void> result = orderFeignClient.refundOrder(record.getOrderNo());
+                if (result == null || !result.isSuccess()) {
+                    paymentProducer.sendPayResult(record.getOrderNo(), 6);
+                }
+            } catch (Exception e) {
+                log.warn("PaymentRetryTask: sync refund failed for orderNo={}, send MQ", record.getOrderNo());
+                paymentProducer.sendPayResult(record.getOrderNo(), 6);
+            }
+            log.info("PaymentRetryTask: retried refund for orderNo={}, retry={}/{}",
+                    record.getOrderNo(), nextRetry, MAX_RETRIES);
+        }
+    }
+
+    /**
      * 处理单条超时未完成的支付记录
      */
     private void processPendingRecord(PaymentRecord record) {

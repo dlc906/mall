@@ -1,5 +1,7 @@
 package com.mall.auth.service.impl;
 
+import cn.hutool.captcha.CaptchaUtil;
+import cn.hutool.captcha.LineCaptcha;
 import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.crypto.SecureUtil;
@@ -8,6 +10,7 @@ import com.mall.auth.entity.User;
 import com.mall.auth.mapper.UserMapper;
 import com.mall.auth.model.req.LoginReq;
 import com.mall.auth.model.req.RegisterReq;
+import com.mall.auth.model.resp.CaptchaResp;
 import com.mall.auth.model.resp.LoginResp;
 import com.mall.auth.service.AuthService;
 import com.mall.common.constant.CommonConstants;
@@ -26,6 +29,13 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class AuthServiceImpl implements AuthService {
 
+    /** 验证码有效期（分钟） */
+    private static final long CAPTCHA_EXPIRE_MINUTES = 5;
+    /** 最大登录失败次数 */
+    private static final int MAX_LOGIN_FAIL = 5;
+    /** 失败锁定时间（分钟） */
+    private static final long LOCK_MINUTES = 15;
+
     @Resource
     private UserMapper userMapper;
     @Resource
@@ -33,20 +43,78 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public LoginResp login(LoginReq req) {
+        // 1. 校验验证码（防机器人/暴力破解）
+        verifyCaptcha(req);
+
+        // 2. 检查账号是否已被锁定（连续失败超限）
+        String failKey = RedisKey.RATE_LIMIT + "login:fail:" + req.getUsername();
+        Long failCount = redisUtils.get(failKey, Long.class);
+        if (failCount != null && failCount >= MAX_LOGIN_FAIL) {
+            long remain = redisUtils.getExpire(failKey, TimeUnit.MINUTES);
+            throw new BizException("登录失败次数过多，请 " + Math.max(remain, 1) + " 分钟后再试");
+        }
+
+        // 3. 校验用户与密码
         User user = userMapper.selectOne(new LambdaQueryWrapper<User>()
                 .eq(User::getUsername, req.getUsername()));
-        if (user == null) {
-            throw new BizException("用户名或密码错误");
+        boolean authOk = false;
+        if (user != null && (user.getStatus() == null || user.getStatus() != 0)) {
+            // BCrypt-alike: MD5 for simplicity (production use BCrypt)
+            String encryptedPassword = SecureUtil.md5(req.getPassword());
+            authOk = encryptedPassword.equals(user.getPassword());
         }
+
+        if (!authOk) {
+            // 4. 失败计数 + 锁定
+            long count = redisUtils.increment(failKey, 1);
+            if (count == 1) {
+                redisUtils.expire(failKey, LOCK_MINUTES, TimeUnit.MINUTES);
+            }
+            if (count >= MAX_LOGIN_FAIL) {
+                log.warn("Login account locked: username={}, failCount={}", req.getUsername(), count);
+                throw new BizException("登录失败次数过多，账号已锁定 " + LOCK_MINUTES + " 分钟");
+            }
+            throw new BizException("用户名或密码错误（还可尝试 " + (MAX_LOGIN_FAIL - count) + " 次）");
+        }
+
         if (user.getStatus() != null && user.getStatus() == 0) {
             throw new BizException("账号已被禁用");
         }
-        // BCrypt-alike: MD5 for simplicity (production use BCrypt)
-        String encryptedPassword = SecureUtil.md5(req.getPassword());
-        if (!encryptedPassword.equals(user.getPassword())) {
-            throw new BizException("用户名或密码错误");
-        }
+
+        // 5. 登录成功：清除失败计数，返回令牌
+        redisUtils.delete(failKey);
+        log.info("User login success: {}", req.getUsername());
         return buildLoginResp(user);
+    }
+
+    @Override
+    public CaptchaResp generateCaptcha() {
+        LineCaptcha captcha = CaptchaUtil.createLineCaptcha(120, 40, 4, 20);
+        String code = captcha.getCode();
+        String captchaKey = IdUtil.fastSimpleUUID();
+        redisUtils.set(RedisKey.VERIFY_CODE + captchaKey, code, CAPTCHA_EXPIRE_MINUTES, TimeUnit.MINUTES);
+        return CaptchaResp.builder()
+                .captchaKey(captchaKey)
+                .captchaImg(captcha.getImageBase64Data())
+                .build();
+    }
+
+    /**
+     * 校验验证码（一次性使用：无论对错都删除，防止暴力试）
+     */
+    private void verifyCaptcha(LoginReq req) {
+        if (StrUtil.isBlank(req.getCaptchaKey()) || StrUtil.isBlank(req.getCaptchaCode())) {
+            throw new BizException("请输入验证码");
+        }
+        String key = RedisKey.VERIFY_CODE + req.getCaptchaKey();
+        String savedCode = redisUtils.get(key, String.class);
+        if (savedCode == null) {
+            throw new BizException("验证码已过期，请刷新后重试");
+        }
+        redisUtils.delete(key);  // 一次性使用
+        if (!savedCode.equalsIgnoreCase(req.getCaptchaCode().trim())) {
+            throw new BizException("验证码错误");
+        }
     }
 
     @Override
