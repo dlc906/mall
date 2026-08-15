@@ -5,6 +5,7 @@ import cn.hutool.captcha.LineCaptcha;
 import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.crypto.SecureUtil;
+import cn.hutool.crypto.digest.BCrypt;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.mall.auth.entity.User;
 import com.mall.auth.mapper.UserMapper;
@@ -59,9 +60,7 @@ public class AuthServiceImpl implements AuthService {
                 .eq(User::getUsername, req.getUsername()));
         boolean authOk = false;
         if (user != null && (user.getStatus() == null || user.getStatus() != 0)) {
-            // BCrypt-alike: MD5 for simplicity (production use BCrypt)
-            String encryptedPassword = SecureUtil.md5(req.getPassword());
-            authOk = encryptedPassword.equals(user.getPassword());
+            authOk = checkPassword(req.getPassword(), user);
         }
 
         if (!authOk) {
@@ -97,6 +96,26 @@ public class AuthServiceImpl implements AuthService {
                 .captchaKey(captchaKey)
                 .captchaImg(captcha.getImageBase64Data())
                 .build();
+    }
+
+    /**
+     * 校验密码：优先 BCrypt；兼容历史 MD5 数据（登录成功后自动升级为 BCrypt）
+     */
+    private boolean checkPassword(String rawPassword, User user) {
+        String stored = user.getPassword();
+        // BCrypt 哈希以 $2a$/$2b$/$2y$ 开头
+        if (StrUtil.startWith(stored, "$2")) {
+            return BCrypt.checkpw(rawPassword, stored);
+        }
+        // 兼容历史 MD5 数据（32位hex）
+        boolean ok = SecureUtil.md5(rawPassword).equalsIgnoreCase(stored);
+        if (ok) {
+            // 懒迁移：登录成功后自动升级为 BCrypt
+            user.setPassword(BCrypt.hashpw(rawPassword, BCrypt.gensalt()));
+            userMapper.updateById(user);
+            log.info("Password upgraded to BCrypt for user: {}", user.getUsername());
+        }
+        return ok;
     }
 
     /**
@@ -163,7 +182,7 @@ public class AuthServiceImpl implements AuthService {
 
         User user = new User();
         user.setUsername(req.getUsername());
-        user.setPassword(SecureUtil.md5(req.getPassword()));
+        user.setPassword(BCrypt.hashpw(req.getPassword(), BCrypt.gensalt()));
         user.setPhone(req.getPhone());
         user.setNickname(req.getUsername());
         user.setStatus(1);

@@ -1,7 +1,7 @@
 package com.mall.user.service.impl;
 
 import cn.hutool.core.util.IdUtil;
-import cn.hutool.crypto.SecureUtil;
+import cn.hutool.crypto.digest.BCrypt;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.mall.common.exception.BizException;
 import com.mall.user.entity.User;
@@ -32,7 +32,7 @@ public class UserServiceImpl implements UserService {
 
         User user = new User();
         user.setUsername(req.getUsername());
-        user.setPassword(SecureUtil.md5(req.getPassword()));
+        user.setPassword(BCrypt.hashpw(req.getPassword(), BCrypt.gensalt()));
         user.setPhone(req.getPhone());
         user.setEmail(req.getEmail());
         user.setNickname(req.getUsername());

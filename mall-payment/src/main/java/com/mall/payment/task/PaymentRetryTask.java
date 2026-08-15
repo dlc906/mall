@@ -179,15 +179,29 @@ public class PaymentRetryTask {
         // 步骤3：订单未支付 → 判断重试次数
         int nextRetry = currentRetry + 1;
         if (nextRetry > MAX_RETRIES) {
-            // 步骤4：重试超限 → Saga 补偿：标记失败 + 自动退款
-            log.warn("PaymentRetryTask: retry exhausted for orderNo={}, initiating auto refund", record.getOrderNo());
+            // 步骤4：重试超限 → Saga 补偿：标记失败 + 按订单实际状态分派补偿动作
+            log.warn("PaymentRetryTask: retry exhausted for orderNo={}, initiating compensation", record.getOrderNo());
             paymentService.markPaymentFailed(record.getPaymentNo(),
-                    "支付通知重试超限，自动退款", nextRetry);
-            // 发起退款（调用订单服务的退款接口）
-            try {
-                orderFeignClient.cancelOrderByOrderNo(record.getOrderNo(), "支付超时自动退款");
-            } catch (Exception e) {
-                log.error("PaymentRetryTask: auto refund failed for orderNo={}", record.getOrderNo(), e);
+                    "支付通知重试超限，自动补偿", nextRetry);
+
+            // 重新查询一次实际状态（防查询后到补偿前期间订单状态变化）
+            Integer currentStatus = queryOrderStatus(record.getOrderNo());
+            if (currentStatus == null) {
+                // 订单服务不可用：MQ 兜底，订单恢复后由消费端幂等处理
+                log.warn("PaymentRetryTask: order service unavailable for compensation orderNo={}, rely on MQ",
+                        record.getOrderNo());
+                paymentProducer.sendPayResult(record.getOrderNo(), 6);
+            } else if (currentStatus == 1) {
+                // 已支付但通知丢失 → 退款（status 1→6 + 回滚库存），带重试 + MQ 兜底
+                compensateRefund(record.getOrderNo());
+            } else if (currentStatus == 0) {
+                // 未支付 → 取消订单释放库存（status 0→4 + 回滚库存），带重试
+                // 最终兜底：即使取消失败，XXL-Job 超时取消任务也会回收该订单
+                compensateCancel(record.getOrderNo());
+            } else {
+                // 已取消/已退款等终态：无需补偿
+                log.info("PaymentRetryTask: order {} already in terminal state {}, skip compensation",
+                        record.getOrderNo(), currentStatus);
             }
         } else {
             // 重试：更新重试信息 + 重新投递 MQ
@@ -196,6 +210,49 @@ public class PaymentRetryTask {
             log.info("PaymentRetryTask: resent MQ for orderNo={}, retry={}/{}",
                     record.getOrderNo(), nextRetry, MAX_RETRIES);
         }
+    }
+
+    /**
+     * 补偿退款：同步 refundOrder + MQ 兜底（status=6），订单侧条件更新保证幂等
+     */
+    private void compensateRefund(String orderNo) {
+        try {
+            Result<Void> result = orderFeignClient.refundOrder(orderNo);
+            if (result == null || !result.isSuccess()) {
+                paymentProducer.sendPayResult(orderNo, 6);
+            }
+        } catch (Exception e) {
+            log.warn("PaymentRetryTask: sync refund failed for orderNo={}, send MQ", orderNo);
+            paymentProducer.sendPayResult(orderNo, 6);
+        }
+    }
+
+    /**
+     * 补偿取消：同步 cancelOrderByOrderNo，最多重试3次（1秒间隔），失败仅告警，
+     * 最终由 XXL-Job 超时取消任务兜底（订单仍为 status=0 时可被回收）
+     */
+    private void compensateCancel(String orderNo) {
+        int maxRetries = 3;
+        for (int i = 1; i <= maxRetries; i++) {
+            try {
+                Result<Void> result = orderFeignClient.cancelOrderByOrderNo(orderNo, "支付超时自动取消");
+                if (result != null && result.isSuccess()) {
+                    log.info("PaymentRetryTask: order {} cancelled by compensation", orderNo);
+                    return;
+                }
+            } catch (Exception e) {
+                log.warn("PaymentRetryTask: cancel failed for orderNo={}, attempt {}/{}", orderNo, i, maxRetries);
+            }
+            if (i < maxRetries) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+        log.error("PaymentRetryTask: cancel exhausted for orderNo={}, rely on XXL-Job timeout cancellation", orderNo);
     }
 
     /**

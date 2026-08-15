@@ -17,7 +17,7 @@ USE mall_user;
 CREATE TABLE IF NOT EXISTS mall_user (
     id BIGINT NOT NULL COMMENT '用户ID',
     username VARCHAR(50) NOT NULL COMMENT '用户名',
-    password VARCHAR(200) NOT NULL COMMENT '密码(MD5加密)',
+    password VARCHAR(200) NOT NULL COMMENT '密码(BCrypt加密)',
     phone VARCHAR(20) DEFAULT NULL COMMENT '手机号',
     email VARCHAR(100) DEFAULT NULL COMMENT '邮箱',
     avatar VARCHAR(500) DEFAULT NULL COMMENT '头像URL',
@@ -55,10 +55,10 @@ CREATE TABLE IF NOT EXISTS mall_address (
 
 SET NAMES utf8mb4;
 
--- 测试用户 (密码: 123456, MD5: e10adc3949ba59abbe56e057f20f883e)
+-- 测试用户 (密码: 123456, BCrypt: $2a$10$dZY8D8r9SpAK7EZkTqcafOOHvD7uhGdDX9Zg/DGN18H7bhA7UDqx6)
 INSERT IGNORE INTO mall_user (id, username, password, nickname, status, invite_code) VALUES
-(1, 'admin', 'e10adc3949ba59abbe56e057f20f883e', '管理员', 1, 'ADMIN001'),
-(2, 'test', 'e10adc3949ba59abbe56e057f20f883e', '测试用户', 1, 'TEST001');
+(1, 'admin', '$2a$10$dZY8D8r9SpAK7EZkTqcafOOHvD7uhGdDX9Zg/DGN18H7bhA7UDqx6', '管理员', 1, 'ADMIN001'),
+(2, 'test', '$2a$10$dZY8D8r9SpAK7EZkTqcafOOHvD7uhGdDX9Zg/DGN18H7bhA7UDqx6', '测试用户', 1, 'TEST001');
 
 -- ========== 3. mall_product - 商品数据库 ==========
 USE mall_product;

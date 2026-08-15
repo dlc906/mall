@@ -43,7 +43,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public Result<?> handleException(Exception e, HttpServletRequest request) {
+        // 完整堆栈仅记录服务端日志，不向客户端暴露内部细节（防止泄漏 SQL/路径/依赖信息）
         log.error("Unexpected error at [{} {}]", request.getMethod(), request.getRequestURI(), e);
-        return Result.error(500, "服务器内部错误: " + e.getMessage());
+        return Result.error(500, "服务器内部错误，请稍后重试");
     }
 }

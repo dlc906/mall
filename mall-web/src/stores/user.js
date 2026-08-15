@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import request from '../utils/request'
+import { useCartStore } from './cart'
 
 export const useUserStore = defineStore('user', () => {
   const userInfo = ref(null)
@@ -40,6 +41,8 @@ export const useUserStore = defineStore('user', () => {
     localStorage.removeItem('refreshToken')
     userInfo.value = null
     isLoggedIn.value = false
+    // 重置购物车缓存，防止切换账号后看到上一用户数据
+    useCartStore().reset()
   }
 
   return { userInfo, isLoggedIn, login, register, logout, fetchUserInfo }

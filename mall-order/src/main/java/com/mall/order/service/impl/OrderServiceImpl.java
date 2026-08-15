@@ -72,8 +72,11 @@ public class OrderServiceImpl implements OrderService {
     }
 
     private OrderResp doCreateOrder(Long userId, CreateOrderReq req) {
-        // 事务回滚补偿：Seata/本地事务回滚时只恢复 MySQL，Redis 扣减需手动加回，
-        // 否则会出现"MySQL 库存回滚但 Redis 库存被吞"的数据分裂。
+        // 库存补偿唯一路径：事务回滚时把 Redis 扣减的库存加回。
+        // 只在此处补偿一次（循环内不再回滚），避免"循环内回滚 + 回调回滚"双补偿导致库存虚高。
+        // Redis 扣减是 Feign 副作用，Seata/本地事务回滚只恢复 MySQL，故必须手动加回。
+        // 补偿时机：订单创建事务回滚（含多商品部分失败、订单落库失败）。createOrder 即全局事务根，
+        // 异常必然触发本地回滚（afterCompletion=ROLLED_BACK），本项目不存在"本地提交+全局异步回滚"场景。
         List<CreateOrderReq.OrderItemReq> deductedItems = new ArrayList<>();
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
@@ -81,11 +84,13 @@ public class OrderServiceImpl implements OrderService {
                 if (status == STATUS_ROLLED_BACK && !deductedItems.isEmpty()) {
                     for (CreateOrderReq.OrderItemReq item : deductedItems) {
                         try {
-                            productFeignClient.updateStock(item.getProductId(), item.getQuantity());
+                            // 复用带重试的回滚（3次×1秒），避免单次失败库存永久丢失
+                            retryRollback(item.getProductId(), item.getQuantity());
                             log.warn("Compensate Redis stock after rollback: product={}, +{}",
                                     item.getProductId(), item.getQuantity());
                         } catch (Exception e) {
-                            log.error("Compensate stock failed: product={}", item.getProductId(), e);
+                            log.error("Compensate stock failed: product={}, manual intervention may be needed",
+                                    item.getProductId(), e);
                         }
                     }
                 }
@@ -134,7 +139,11 @@ public class OrderServiceImpl implements OrderService {
             RLock lock = redissonClient.getLock(lockKey);
 
             try {
-                boolean locked = lock.tryLock(5, 10, TimeUnit.SECONDS);
+                // 不指定 leaseTime：由 Redisson watchdog 自动续期（默认30s，每10s续期一次），
+                // 锁持有时间与线程存活一致。避免显式租约(10s) < 事务时长(多次Feign+Seata)时
+                // 锁提前释放、第二个请求拿到锁重复扣减。线程异常终止时 watchdog 停止，
+                // 锁最多30s后自动释放，不会死锁。
+                boolean locked = lock.tryLock(5, TimeUnit.SECONDS);
                 if (!locked) {
                     throw new BizException("系统繁忙，请稍后再试");
                 }
@@ -188,12 +197,11 @@ public class OrderServiceImpl implements OrderService {
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                // 部分扣减成功，回滚已扣库存
-                rollbackDeducted(deductedItems);
+                // 库存补偿统一由事务回滚回调 afterCompletion 执行（仅一次），此处不再回滚，
+                // 避免与回调重复补偿导致库存虚高
                 throw new BizException("系统异常");
             } catch (Exception e) {
-                // 部分扣减成功，回滚已扣库存
-                rollbackDeducted(deductedItems);
+                // 同上：库存补偿交给事务回滚回调，保证只补偿一次
                 throw e;
             } finally {
                 if (lock.isHeldByCurrentThread()) {
@@ -453,19 +461,5 @@ public class OrderServiceImpl implements OrderService {
             }
         }
         throw new BizException("库存回滚失败，请联系客服");
-    }
-
-    /**
-     * 多商品下单时，部分商品扣库存失败后回滚已成功的商品
-     */
-    private void rollbackDeducted(List<CreateOrderReq.OrderItemReq> deductedItems) {
-        for (CreateOrderReq.OrderItemReq item : deductedItems) {
-            try {
-                productFeignClient.updateStock(item.getProductId(), item.getQuantity());
-                log.info("Rolled back stock for product {}: +{}", item.getProductId(), item.getQuantity());
-            } catch (Exception e) {
-                log.error("Rollback failed for product {}, manual intervention may be needed", item.getProductId(), e);
-            }
-        }
     }
 }
